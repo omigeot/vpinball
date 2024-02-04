@@ -1,4 +1,10 @@
 #include "stdafx.h"
+#ifdef __STANDALONE__
+#include "imgui/imgui_impl_sdl2.h"
+#include "standalone/inc/common/WindowManager.h"
+#endif
+
+#include "core/TableDB.h"
 
 // from dinput.h, modernized to please clang
 #undef DIJOFS_X
@@ -24,6 +30,11 @@
 
 #define INPUT_BUFFER_SIZE MAX_KEYQUEUE_SIZE
 #define BALLCONTROL_DOUBLECLICK_THRESHOLD_USEC (500 * 1000)
+
+constexpr DWORD D_MOUSE_DRAGGED_LEFT = 1;
+constexpr DWORD D_MOUSE_DRAGGED_RIGHT = 2;
+constexpr DWORD D_MOUSE_DRAGGED_MIDDLE = 3;
+constexpr DWORD D_MOUSE_MOVED_LEFT_DOWN = 4;
 
 
 PinInput::PinInput()
@@ -101,6 +112,22 @@ PinInput::PinInput()
    m_joytablerecenter = 0;
    m_joytableup = 0;
    m_joytabledown = 0;
+
+#ifdef __STANDALONE__
+   m_joylflipkey = SDL_CONTROLLER_BUTTON_LEFTSHOULDER + 1;
+   m_joyrflipkey = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER + 1;
+   m_joylmagnasave = SDL_CONTROLLER_BUTTON_LEFTSTICK + 1;
+   m_joyrmagnasave = SDL_CONTROLLER_BUTTON_RIGHTSTICK + 1;
+   m_joyplungerkey = SDL_CONTROLLER_BUTTON_DPAD_DOWN + 1;
+   m_joyaddcreditkey = SDL_CONTROLLER_BUTTON_A + 1;
+   m_joystartgamekey = SDL_CONTROLLER_BUTTON_B + 1;
+   m_joypmcancel = SDL_CONTROLLER_BUTTON_Y + 1;
+   m_joyframecount = SDL_CONTROLLER_BUTTON_X + 1;
+   m_joycentertilt = SDL_CONTROLLER_BUTTON_DPAD_UP + 1;
+   m_joylefttilt = SDL_CONTROLLER_BUTTON_DPAD_LEFT + 1;
+   m_joyrighttilt = SDL_CONTROLLER_BUTTON_DPAD_RIGHT + 1;
+   m_joylockbar = SDL_CONTROLLER_BUTTON_GUIDE + 1;
+#endif
 
    m_firedautostart = 0;
 
@@ -491,7 +518,7 @@ void PinInput::GetInputDeviceData(/*const U32 curr_time_msec*/)
                   GetCursorPos(&curPos);
                   m_mouseDX = curPos.x - m_mouseX;
                   m_mouseDY = curPos.y - m_mouseY;
-                  didod[0].dwData = 1;
+                  didod[0].dwData = D_MOUSE_DRAGGED_LEFT;
                   PushQueue(didod, APP_MOUSE);
                   m_leftMouseButtonDown = false;
                }
@@ -509,7 +536,7 @@ void PinInput::GetInputDeviceData(/*const U32 curr_time_msec*/)
                   GetCursorPos(&curPos);
                   m_mouseDX = curPos.x - m_mouseX;
                   m_mouseDY = curPos.y - m_mouseY;
-                  didod[0].dwData = 2;
+                  didod[0].dwData = D_MOUSE_DRAGGED_RIGHT;
                   PushQueue(didod, APP_MOUSE);
                   m_rightMouseButtonDown = false;
                }
@@ -527,7 +554,7 @@ void PinInput::GetInputDeviceData(/*const U32 curr_time_msec*/)
                   GetCursorPos(&curPos);
                   m_mouseDX = curPos.x - m_mouseX;
                   m_mouseDY = curPos.y - m_mouseY;
-                  didod[0].dwData = 3;
+                  didod[0].dwData = D_MOUSE_DRAGGED_MIDDLE;
                   PushQueue(didod, APP_MOUSE);
                   m_middleMouseButtonDown = false;
                }
@@ -535,7 +562,7 @@ void PinInput::GetInputDeviceData(/*const U32 curr_time_msec*/)
                {
                   POINT curPos;
                   GetCursorPos(&curPos);
-                  didod[0].dwData = 4;
+                  didod[0].dwData = D_MOUSE_MOVED_LEFT_DOWN;
                   m_mouseX = curPos.x;
                   m_mouseY = curPos.y;
                   PushQueue(didod, APP_MOUSE);
@@ -716,6 +743,16 @@ void PinInput::HandleInputXI(DIDEVICEOBJECTDATA *didod)
 #endif
 }
 
+#ifdef ENABLE_SDL_INPUT
+void PinInput::SdlScaleHidpi(const Sint32 x, const Sint32 y, Sint32* ox, Sint32* oy)
+{
+   // Precision is not great because the events need float coordinates
+   // Fixed in SDL3 https://github.com/libsdl-org/SDL/issues/2999
+   *ox = static_cast<Sint32>(g_pplayer->m_wnd_scale_x * x);
+   *oy = static_cast<Sint32>(g_pplayer->m_wnd_scale_y * y);
+}
+#endif
+
 void PinInput::HandleInputSDL(DIDEVICEOBJECTDATA *didod)
 {
 #ifdef ENABLE_SDL_INPUT
@@ -725,8 +762,50 @@ void PinInput::HandleInputSDL(DIDEVICEOBJECTDATA *didod)
    int j = 0;
    while (SDL_PollEvent(&e) != 0 && j<32)
    {
+#ifdef __STANDALONE__
+       ImGui_ImplSDL2_ProcessEvent(&e);
+       g_pplayer->m_pWindowManager->ProcessEvent(&e);
+#endif
       //User requests quit
       switch (e.type) {
+#ifdef __STANDALONE__
+      case SDL_WINDOWEVENT:
+         switch (e.window.event) {
+         case SDL_WINDOWEVENT_RESIZED:
+               g_pplayer->m_wnd_scale_x = static_cast<float>(g_pplayer->m_wnd_width) / static_cast<float>(e.window.data1);
+               g_pplayer->m_wnd_scale_y = static_cast<float>(g_pplayer->m_wnd_height) / static_cast<float>(e.window.data2);
+               break;
+         case SDL_WINDOWEVENT_FOCUS_GAINED:
+            g_pplayer->m_gameWindowActive = true;
+            break;
+         case SDL_WINDOWEVENT_FOCUS_LOST:
+            g_pplayer->m_gameWindowActive = false;
+            break;
+         case SDL_WINDOWEVENT_CLOSE:
+            g_pvp->QuitPlayer(Player::CloseState::CS_USER_INPUT);
+            break;
+         }
+         break;
+#if (defined(__APPLE__) && (defined(TARGET_OS_IOS) && TARGET_OS_IOS)) || defined(__ANDROID__)
+      case SDL_FINGERDOWN:
+      case SDL_FINGERUP: {
+         POINT point;
+         point.x = (int)((float)g_pplayer->m_wnd_width * e.tfinger.x);
+         point.y = (int)((float)g_pplayer->m_wnd_height * e.tfinger.y);
+
+         for (unsigned int i = 0; i < MAX_TOUCHREGION; ++i)
+            if ((g_pplayer->m_touchregion_pressed[i] != (e.type == SDL_FINGERDOWN)) && Intersect(touchregion[i], g_pplayer->m_wnd_width, g_pplayer->m_wnd_height, point, fmodf(g_pplayer->m_ptable->mViewSetups[g_pplayer->m_ptable->m_BG_current_set].mViewportRotation, 360.0f) != 0.f)) {
+               g_pplayer->m_touchregion_pressed[i] = (e.type == SDL_FINGERDOWN);
+
+               DIDEVICEOBJECTDATA didod;
+               didod.dwOfs = g_pplayer->m_rgKeys[touchkeymap[i]];
+               didod.dwData = g_pplayer->m_touchregion_pressed[i] ? 0x80 : 0;
+               PushQueue(&didod, APP_TOUCH/*, curr_time_msec*/);
+            }
+         break;
+      }
+#endif
+#endif
       case SDL_QUIT:
          //Open Exit dialog
          break;
@@ -807,8 +886,87 @@ void PinInput::HandleInputSDL(DIDEVICEOBJECTDATA *didod)
          }
          break;
 #endif
+#ifdef __STANDALONE__
+      case SDL_KEYUP:
+      case SDL_KEYDOWN:
+         if (e.key.repeat == 0) {
+            const unsigned int dik = get_dik_from_sdlk(e.key.keysym.sym);
+            if (dik != ~0u) {
+               didod[j].dwOfs = dik;
+               didod[j].dwData = e.type == SDL_KEYDOWN ? 0x80 : 0;
+               //didod[j].dwTimeStamp = curr_time_msec;
+               PushQueue(&didod[j], APP_KEYBOARD/*, curr_time_msec*/);
+               j++; 
+            }
+         }
+      case SDL_MOUSEMOTION:
+         if (g_pplayer->m_throwBalls || g_pplayer->m_ballControl)
+         {
+            if (g_pplayer->m_ballControl && !g_pplayer->m_throwBalls && m_leftMouseButtonDown && !m_rightMouseButtonDown && !m_middleMouseButtonDown)
+            {
+               didod[0].dwData = D_MOUSE_MOVED_LEFT_DOWN;
+               Sint32 x, y;
+               SdlScaleHidpi(e.motion.x, e.motion.y, &x, &y);
+               m_mouseX = x;
+               m_mouseY = y;
+               PushQueue(didod, APP_MOUSE);
+            }
+         }
+         break;
+      case SDL_MOUSEBUTTONDOWN:
+         if (g_pplayer->m_throwBalls || g_pplayer->m_ballControl)
+         {
+            if (e.button.button == SDL_BUTTON_LEFT)
+               m_leftMouseButtonDown = true;
+            else if (e.button.button == SDL_BUTTON_MIDDLE)
+               m_middleMouseButtonDown = true;
+            else if (e.button.button == SDL_BUTTON_RIGHT)
+               m_rightMouseButtonDown = true;
+            Sint32 x, y;
+            SdlScaleHidpi(e.button.x, e.button.y, &x, &y);
+            m_mouseX = x;
+            m_mouseY = y;
+         }
+         break;
+      case SDL_MOUSEBUTTONUP:
+         if (g_pplayer->m_throwBalls || g_pplayer->m_ballControl)
+         {
+            if (e.button.button == SDL_BUTTON_LEFT)
+            {
+               m_leftMouseButtonDown = false;
+               Sint32 x, y;
+               SdlScaleHidpi(e.button.x, e.button.y, &x, &y);
+               m_mouseDX = x - m_mouseX;
+               m_mouseDY = y - m_mouseY;
+               didod[0].dwData = D_MOUSE_DRAGGED_LEFT;
+               PushQueue(didod, APP_MOUSE);
+            } else if (e.button.button == SDL_BUTTON_MIDDLE)
+            {
+               m_middleMouseButtonDown = false;
+               Sint32 x, y;
+               SdlScaleHidpi(e.button.x, e.button.y, &x, &y);
+               m_mouseDX = x - m_mouseX;
+               m_mouseDY = y - m_mouseY;
+               didod[0].dwData = D_MOUSE_DRAGGED_MIDDLE;
+               PushQueue(didod, APP_MOUSE);
+            } else if (e.button.button == SDL_BUTTON_RIGHT)
+            {
+               m_rightMouseButtonDown = false;
+               Sint32 x, y;
+               SdlScaleHidpi(e.button.x, e.button.y, &x, &y);
+               m_mouseDX = x - m_mouseX;
+               m_mouseDY = y - m_mouseY;
+               didod[0].dwData = D_MOUSE_DRAGGED_RIGHT;
+               PushQueue(didod, APP_MOUSE);
+            }
+         }
+         break;
+#endif
       }
    }
+#ifdef __STANDALONE__
+   g_pplayer->m_pWindowManager->ProcessUpdates();
+#endif
 #endif
 }
 
@@ -936,6 +1094,10 @@ void PinInput::Init(const HWND hwnd)
    uShockType = 0;
 
    m_inputApi = g_pvp->m_settings.LoadValueWithDefault(Settings::Player, "InputApi"s, 0);
+
+#ifdef __STANDALONE__
+   m_inputApi = 2;
+#endif
 
    switch (m_inputApi) {
    case 1: //xInput
@@ -1320,13 +1482,13 @@ void PinInput::Joy(const unsigned int n, const int updown, const bool start)
 
 void PinInput::ProcessBallControl(const DIDEVICEOBJECTDATA * __restrict input)
 {
-	if (input->dwData == 1 || input->dwData == 3 || input->dwData == 4)
+	if (input->dwData == D_MOUSE_DRAGGED_LEFT || input->dwData == D_MOUSE_DRAGGED_MIDDLE || input->dwData == D_MOUSE_MOVED_LEFT_DOWN)
 	{
 		POINT point = { m_mouseX, m_mouseY };
 		ScreenToClient(m_hwnd, &point);
 		delete g_pplayer->m_pBCTarget;
 		g_pplayer->m_pBCTarget = new Vertex3Ds(g_pplayer->m_pin3d.Get3DPointFrom2D(point));
-		if (input->dwData == 1 || input->dwData == 3)
+		if (input->dwData == D_MOUSE_DRAGGED_LEFT || input->dwData == D_MOUSE_DRAGGED_MIDDLE)
 		{
 			const uint64_t cur = usec();
 			if (m_lastclick_ballcontrol_usec + BALLCONTROL_DOUBLECLICK_THRESHOLD_USEC > cur)
@@ -1353,7 +1515,7 @@ void PinInput::ProcessBallControl(const DIDEVICEOBJECTDATA * __restrict input)
 
 void PinInput::ProcessThrowBalls(const DIDEVICEOBJECTDATA * __restrict input)
 {
-   if (input->dwData == 1 || input->dwData == 3)
+   if (input->dwData == D_MOUSE_DRAGGED_LEFT || input->dwData == D_MOUSE_DRAGGED_MIDDLE)
    {
       POINT point = { m_mouseX, m_mouseY };
       ScreenToClient(m_hwnd, &point);
@@ -1391,7 +1553,7 @@ void PinInput::ProcessThrowBalls(const DIDEVICEOBJECTDATA * __restrict input)
 		else
 		{
 			bool ballGrabbed = false;
-			if (input->dwData == 1)
+			if (input->dwData == D_MOUSE_DRAGGED_LEFT)
 			{
 				for (size_t i = 0; i < g_pplayer->m_vball.size(); i++)
 				{
@@ -1412,13 +1574,13 @@ void PinInput::ProcessThrowBalls(const DIDEVICEOBJECTDATA * __restrict input)
 			}
 			if (!ballGrabbed)
 			{
-				const float z = (input->dwData == 3) ? g_pplayer->m_ptable->m_glassTopHeight : 0.f;
+				const float z = (input->dwData == D_MOUSE_DRAGGED_MIDDLE) ? g_pplayer->m_ptable->m_glassTopHeight : 0.f;
 				Ball * const pball = g_pplayer->CreateBall(vertex.x, vertex.y, z, vx, vy, 0, (float)g_pplayer->m_debugBallSize*0.5f, g_pplayer->m_debugBallMass);
 				pball->m_pballex->AddRef();
 			}
 		}
     }
-    else if (input->dwData == 2)
+    else if (input->dwData == D_MOUSE_DRAGGED_RIGHT)
     {
         POINT point = { m_mouseX, m_mouseY };
         ScreenToClient(m_hwnd, &point);
@@ -1616,6 +1778,7 @@ void PinInput::ProcessJoystick(const DIDEVICEOBJECTDATA * __restrict input, int 
         else
             FireKeyEvent(updown, input->dwOfs | 0x01000000); // unknown button events
     }
+#ifndef __STANDALONE__
     else //end joy buttons
     {
         // Axis Deadzone
@@ -1840,6 +2003,7 @@ void PinInput::ProcessJoystick(const DIDEVICEOBJECTDATA * __restrict input, int 
                 break;
         }
     }
+#endif
 }
 
 
@@ -1944,8 +2108,7 @@ void PinInput::ProcessKeys(/*const U32 curr_sim_msec,*/ int curr_time_msec) // l
                FireKeyEvent((input->dwData & 0x80) ? DISPID_GameEvents_KeyDown : DISPID_GameEvents_KeyUp, (DWORD)g_pplayer->m_rgKeys[ePlungerKey]);
          }
       }
-
-      if (input->dwSequence == APP_KEYBOARD && (g_pplayer == nullptr || !g_pplayer->m_liveUI->HasKeyboardCapture()))
+      else if (input->dwSequence == APP_KEYBOARD && (g_pplayer == nullptr || !g_pplayer->m_liveUI->HasKeyboardCapture()))
       {
          // Camera mode fly around:
          if (g_pplayer && g_pplayer->m_liveUI->IsTweakMode() && m_enableCameraModeFlyAround)
@@ -2080,6 +2243,10 @@ void PinInput::ProcessKeys(/*const U32 curr_sim_msec,*/ int curr_time_msec) // l
                   // Open UI on key up since a long press should not trigger the UI (direct exit from the app)
                   g_pplayer->m_closing = Player::CS_USER_INPUT;
                   m_exit_stamp = 0;
+#ifdef __STANDALONE__
+                  if (input->dwOfs == (DWORD)g_pplayer->m_rgKeys[eExitGame])
+                     g_pplayer->m_closing = Player::CS_CLOSE_APP;
+#endif
                }
             }
          }
@@ -2090,6 +2257,15 @@ void PinInput::ProcessKeys(/*const U32 curr_sim_msec,*/ int curr_time_msec) // l
          }
          else
             FireKeyEvent((input->dwData & 0x80) ? DISPID_GameEvents_KeyDown : DISPID_GameEvents_KeyUp, input->dwOfs);
+      }
+      else if (input->dwSequence == APP_TOUCH && g_pplayer)
+      {
+          if (input->dwOfs == (DWORD)g_pplayer->m_rgKeys[eEscape] && !m_disable_esc) {
+             if ((input->dwData & 0x80) == 0)
+                g_pplayer->m_closing = Player::CS_USER_INPUT;
+          }
+          else
+             FireKeyEvent((input->dwData & 0x80) ? DISPID_GameEvents_KeyDown : DISPID_GameEvents_KeyUp, input->dwOfs);
       }
       else if (input->dwSequence >= APP_JOYSTICKMN && input->dwSequence <= APP_JOYSTICKMX)
           ProcessJoystick(input, curr_time_msec);
@@ -2126,6 +2302,7 @@ int PinInput::GetNextKey() // return last valid keyboard key
 #else
    for (unsigned int i = 0; i < 0xFF; ++i)
    {
+#ifndef __STANDALONE__
       const SHORT keyState = GetAsyncKeyState(i);
       if (keyState & 1)
       {
@@ -2133,6 +2310,7 @@ int PinInput::GetNextKey() // return last valid keyboard key
          if (dik != ~0u)
             return dik;
       }
+#endif
    }
 #endif
 
